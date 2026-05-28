@@ -1,0 +1,1372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AdaState — Self-Evolving Anchors for Streaming Video Generation</title>
+<meta name="description" content="AdaState replaces the frozen first-frame anchor with an adaptive state denoised alongside each chunk — unlocking long-horizon dynamics for streaming video generation. Pinar Yanardag and Yusuf Dalva, Virginia Tech.">
+<meta property="og:title" content="AdaState: Self-Evolving Anchors for Streaming Video Generation">
+<meta property="og:description" content="An adaptive, self-evolving anchor for streaming video diffusion — longer rollouts, real camera motion, no extra modules.">
+<meta property="og:type" content="article">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=DM+Serif+Display&family=JetBrains+Mono:wght@500&display=swap');
+
+  /* ---------- Tokens ---------- */
+  :root {
+    --teal-50:  #E8F7F3;
+    --teal-100: #C7EDE0;
+    --teal-300: #5DD2B0;
+    --teal-500: #06A77D;     /* AdaState primary */
+    --teal-700: #047358;
+    --teal-900: #033B2D;
+
+    --coral-50:  #FFF0EE;
+    --coral-300: #F8A89E;
+    --coral-500: #E63A46;     /* baseline / contrast */
+    --coral-700: #B12B33;
+
+    --ink-900: #0F1F2E;
+    --ink-700: #2E3D4F;
+    --ink-500: #5A6677;
+    --ink-300: #9AA4B2;
+    --ink-100: #E5E9EE;
+    --ink-50:  #F4F6F8;
+    --paper:   #FAFBFC;
+    --white:   #FFFFFF;
+
+    --grad-hero: radial-gradient(120% 80% at 10% 0%, rgba(6,167,125,0.85) 0%, rgba(15,31,46,0.95) 55%, rgba(230,58,70,0.6) 100%);
+    --grad-pop:  linear-gradient(135deg, #06A77D 0%, #14B89F 50%, #E63A46 110%);
+    --grad-glass: linear-gradient(180deg, rgba(255,255,255,0.85) 0%, rgba(255,255,255,0.55) 100%);
+
+    --shadow-card: 0 1px 2px rgba(15,31,46,0.04), 0 8px 24px rgba(15,31,46,0.06);
+    --shadow-pop:  0 8px 32px rgba(6,167,125,0.18), 0 1px 2px rgba(15,31,46,0.06);
+
+    --r-sm: 8px;
+    --r-md: 14px;
+    --r-lg: 22px;
+    --r-xl: 32px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    color: var(--ink-900);
+    background: var(--paper);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  a { color: var(--teal-700); text-decoration: none; }
+  a:hover { color: var(--teal-500); }
+
+  /* ---------- Sticky nav ---------- */
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    backdrop-filter: blur(14px);
+    background: rgba(250,251,252,0.78);
+    border-bottom: 1px solid rgba(15,31,46,0.06);
+  }
+  .nav-inner {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 14px 28px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .nav-brand {
+    font-weight: 800;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .nav-brand .dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--grad-pop);
+    box-shadow: 0 0 0 4px rgba(6,167,125,0.12);
+  }
+  .nav-links { display: flex; gap: 24px; font-size: 13.5px; font-weight: 500; }
+  .nav-links a { color: var(--ink-700); }
+  .nav-links a:hover { color: var(--teal-500); }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    position: relative;
+    min-height: 92vh;
+    padding: 80px 24px 120px;
+    color: #fff;
+    background: var(--grad-hero), #0F1F2E;
+    overflow: hidden;
+  }
+  .hero::before {
+    /* animated grain / mesh */
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(60% 50% at 80% 15%, rgba(20,184,159,0.45), transparent 60%),
+      radial-gradient(50% 40% at 12% 80%, rgba(230,106,90,0.45), transparent 60%);
+    animation: drift 22s ease-in-out infinite alternate;
+  }
+  @keyframes drift {
+    from { transform: translate3d(0,0,0) scale(1); }
+    to   { transform: translate3d(-30px,20px,0) scale(1.05); }
+  }
+  .hero::after {
+    content: "";
+    position: absolute; inset: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='4' height='4' viewBox='0 0 4 4'><circle cx='2' cy='2' r='0.5' fill='%23ffffff' fill-opacity='0.06'/></svg>");
+    pointer-events: none;
+  }
+
+  .hero-inner {
+    position: relative;
+    z-index: 1;
+    max-width: 1100px;
+    margin: 0 auto;
+    text-align: center;
+  }
+
+  .hero-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.18);
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 28px;
+    backdrop-filter: blur(8px);
+  }
+  .hero-eyebrow .pulse {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #5DD2B0;
+    box-shadow: 0 0 0 0 rgba(93,210,176,0.7);
+    animation: pulse 2.2s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(93,210,176,0.7); }
+    70% { box-shadow: 0 0 0 12px rgba(93,210,176,0); }
+    100% { box-shadow: 0 0 0 0 rgba(93,210,176,0); }
+  }
+
+  .hero h1 {
+    font-family: 'DM Serif Display', serif;
+    font-weight: 400;
+    font-size: clamp(2.4rem, 5.5vw, 4.4rem);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin-bottom: 18px;
+  }
+  .hero h1 .grad {
+    background: linear-gradient(135deg, #5DD2B0 0%, #FFFFFF 50%, #F8A89E 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .hero .tagline {
+    font-size: clamp(1.05rem, 1.6vw, 1.3rem);
+    color: rgba(255,255,255,0.82);
+    max-width: 720px;
+    margin: 0 auto 16px;
+    font-weight: 400;
+  }
+
+  /* Authors card inside the hero (glassy on dark) */
+  .hero-authors-card {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 18px 28px;
+    margin: 0 auto 36px;
+    max-width: 880px;
+    padding: 18px 24px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: var(--r-lg);
+    backdrop-filter: blur(14px);
+    text-align: left;
+  }
+  .hero-authors-card .author-chip { display: flex; align-items: center; gap: 12px; }
+  .hero-authors-card .author-avatar {
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    background: var(--grad-pop);
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'DM Serif Display', serif;
+    font-size: 17px;
+    box-shadow: var(--shadow-pop);
+    flex-shrink: 0;
+  }
+  .hero-authors-card .author-name { font-weight: 700; font-size: 15.5px; color: #fff; line-height: 1.2; }
+  .hero-authors-card .author-name a { color: #fff; border-bottom: 1px dotted rgba(255,255,255,0.35); padding-bottom: 1px; }
+  .hero-authors-card .author-name a:hover { color: #5DD2B0; border-bottom-color: #5DD2B0; }
+  .hero-authors-card .author-role { display: block; font-size: 12px; color: rgba(255,255,255,0.65); font-weight: 500; margin-top: 2px; }
+  .hero-authors-card .author-links { display: flex; gap: 6px; margin-top: 4px; }
+  .hero-authors-card .author-links a {
+    width: 26px; height: 26px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 7px;
+    background: rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.75);
+    border: 1px solid rgba(255,255,255,0.10);
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .hero-authors-card .author-links a:hover { background: rgba(93,210,176,0.18); color: #5DD2B0; border-color: rgba(93,210,176,0.5); }
+  .hero-authors-card .author-links svg { width: 14px; height: 14px; }
+  .hero-authors-card .hero-affil {
+    display: flex; align-items: center; gap: 10px;
+    padding-left: 22px;
+    border-left: 1px solid rgba(255,255,255,0.12);
+  }
+  .vt-mark-hero {
+    width: 30px; height: 30px;
+    border-radius: 7px;
+    background: #861F41;
+    color: #F58025;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'DM Serif Display', serif;
+    font-weight: 700;
+    font-size: 14px;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+  }
+  .vt-name { font-weight: 600; color: #fff; font-size: 13.5px; line-height: 1.2; }
+  .vt-dept { font-size: 11.5px; color: rgba(255,255,255,0.65); }
+  @media (max-width: 760px) {
+    .hero-authors-card .hero-affil { border-left: none; padding-left: 0; border-top: 1px solid rgba(255,255,255,0.10); padding-top: 14px; width: 100%; justify-content: center; }
+  }
+
+  .hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+    margin-bottom: 56px;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 20px;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.10);
+    color: #fff;
+    transition: transform 0.15s, background 0.2s, border-color 0.2s;
+    backdrop-filter: blur(8px);
+  }
+  .btn:hover { transform: translateY(-1px); background: rgba(255,255,255,0.16); border-color: rgba(255,255,255,0.3); color: #fff; }
+  .btn.primary {
+    background: linear-gradient(135deg, #06A77D 0%, #14B89F 100%);
+    border-color: transparent;
+    box-shadow: var(--shadow-pop);
+  }
+  .btn.primary:hover { background: linear-gradient(135deg, #047358 0%, #06A77D 100%); }
+  .btn svg { width: 16px; height: 16px; }
+
+  /* Hero teaser video */
+  .hero-teaser {
+    max-width: 940px;
+    margin: 0 auto;
+    border-radius: var(--r-lg);
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.14);
+    box-shadow: 0 30px 80px rgba(0,0,0,0.4);
+    background: #000;
+  }
+  .hero-teaser video {
+    width: 100%;
+    display: block;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+  }
+  .hero-teaser-caption {
+    background: rgba(15,31,46,0.6);
+    color: rgba(255,255,255,0.75);
+    padding: 14px 20px;
+    font-size: 13px;
+    text-align: center;
+    font-style: italic;
+  }
+
+  /* ---------- Section base ---------- */
+  .section {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 100px 24px 40px;
+    position: relative;
+  }
+  .section.narrow { max-width: 880px; }
+
+  .section-eyebrow {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    padding: 5px 12px;
+    border-radius: 999px;
+    margin-bottom: 16px;
+  }
+  .section-eyebrow.teal  { background: var(--teal-50);  color: var(--teal-700); }
+  .section-eyebrow.coral { background: var(--coral-50); color: var(--coral-700); }
+  .section-eyebrow.ink   { background: var(--ink-100);  color: var(--ink-700); }
+
+  .section-title {
+    font-family: 'DM Serif Display', serif;
+    font-size: clamp(1.9rem, 3.2vw, 2.6rem);
+    line-height: 1.1;
+    letter-spacing: -0.015em;
+    margin-bottom: 14px;
+  }
+  .section-subtitle {
+    font-size: 16px;
+    color: var(--ink-500);
+    max-width: 760px;
+    margin-bottom: 44px;
+  }
+
+  /* Hover-to-pause hint chip — sits next to subtitles in video sections */
+  .hover-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px 6px 8px;
+    border-radius: 999px;
+    background: var(--teal-50);
+    border: 1px solid var(--teal-100);
+    color: var(--teal-700);
+    font-size: 12.5px;
+    font-weight: 600;
+    margin-bottom: 28px;
+  }
+  .hover-hint svg { width: 14px; height: 14px; }
+  .hover-hint .pulse-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--teal-500);
+    box-shadow: 0 0 0 0 rgba(6,167,125,0.55);
+    animation: pulse-sm 2s infinite;
+  }
+  @keyframes pulse-sm {
+    0% { box-shadow: 0 0 0 0 rgba(6,167,125,0.55); }
+    70% { box-shadow: 0 0 0 8px rgba(6,167,125,0); }
+    100% { box-shadow: 0 0 0 0 rgba(6,167,125,0); }
+  }
+
+  /* ---------- Authors card ---------- */
+  .authors-card-wrap {
+    max-width: 1080px;
+    margin: -70px auto 0;
+    padding: 0 24px;
+    position: relative;
+    z-index: 2;
+  }
+  .authors-card {
+    background: #fff;
+    border: 1px solid var(--ink-100);
+    border-radius: var(--r-lg);
+    padding: 22px 28px;
+    box-shadow: var(--shadow-card), 0 20px 50px rgba(15,31,46,0.08);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 18px 28px;
+    justify-content: center;
+  }
+  .author-chip {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .author-avatar {
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    background: var(--grad-pop);
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'DM Serif Display', serif;
+    font-size: 18px;
+    box-shadow: var(--shadow-pop);
+    flex-shrink: 0;
+  }
+  .author-name {
+    font-weight: 700;
+    font-size: 15.5px;
+    color: var(--ink-900);
+    line-height: 1.2;
+  }
+  .author-name a { color: inherit; }
+  .author-name a:hover { color: var(--teal-700); }
+  .author-role {
+    display: block;
+    font-size: 12px;
+    color: var(--ink-500);
+    font-weight: 500;
+    margin-top: 2px;
+  }
+  .author-links {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .author-links a {
+    width: 26px; height: 26px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 7px;
+    background: var(--ink-50);
+    color: var(--ink-500);
+    transition: background 0.15s, color 0.15s;
+  }
+  .author-links a:hover { background: var(--teal-50); color: var(--teal-700); }
+  .author-links svg { width: 14px; height: 14px; }
+  .authors-affil {
+    border-left: 1px solid var(--ink-100);
+    padding-left: 24px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13.5px;
+    color: var(--ink-500);
+  }
+  .authors-affil .vt-mark {
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    background: #861F41; /* VT maroon */
+    color: #F58025;       /* VT orange */
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'DM Serif Display', serif;
+    font-weight: 700;
+    font-size: 13px;
+  }
+  @media (max-width: 720px) {
+    .authors-affil { border-left: none; padding-left: 0; border-top: 1px solid var(--ink-100); padding-top: 16px; width: 100%; justify-content: center; }
+  }
+
+  /* ---------- TL;DR ---------- */
+  .tldr {
+    margin-top: -80px;
+    position: relative;
+    z-index: 2;
+    max-width: 1080px;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 0 24px;
+  }
+  .tldr-card {
+    background: #fff;
+    border-radius: var(--r-xl);
+    padding: 36px 40px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 28px;
+    align-items: center;
+    box-shadow: var(--shadow-card), 0 24px 60px rgba(15,31,46,0.10);
+    border: 1px solid var(--ink-100);
+  }
+  .tldr-badge {
+    width: 84px; height: 84px;
+    border-radius: 24px;
+    background: var(--grad-pop);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: var(--shadow-pop);
+    color: #fff;
+    font-family: 'DM Serif Display', serif;
+    font-size: 32px;
+    font-style: italic;
+  }
+  .tldr-body { font-size: 17px; color: var(--ink-700); line-height: 1.55; }
+  .tldr-body b { color: var(--ink-900); }
+  .tldr-body .hl-teal  { background: linear-gradient(180deg, transparent 65%, rgba(6,167,125,0.22) 65%); padding: 0 2px; color: var(--ink-900); font-weight: 600; }
+  .tldr-body .hl-coral { background: linear-gradient(180deg, transparent 65%, rgba(230,58,70,0.20) 65%); padding: 0 2px; color: var(--ink-900); font-weight: 600; }
+
+  /* ---------- Abstract ---------- */
+  .abstract-card {
+    background: #fff;
+    border-radius: var(--r-lg);
+    padding: 32px 36px;
+    border: 1px solid var(--ink-100);
+    box-shadow: var(--shadow-card);
+    font-size: 15px;
+    line-height: 1.75;
+    color: var(--ink-700);
+  }
+  .abstract-card p + p { margin-top: 14px; }
+  .abstract-card b { color: var(--ink-900); font-weight: 600; }
+
+  /* ---------- Framework ---------- */
+  .framework-figure {
+    background: linear-gradient(180deg, var(--teal-50) 0%, #fff 100%);
+    border: 1px solid var(--teal-100);
+    border-radius: var(--r-lg);
+    padding: 24px;
+    text-align: center;
+  }
+  .framework-figure img,
+  .framework-figure object,
+  .framework-figure svg {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--r-md);
+  }
+  .framework-figure .caption {
+    margin-top: 16px;
+    font-size: 13.5px;
+    color: var(--ink-500);
+    font-style: italic;
+    max-width: 700px;
+    margin-left: auto; margin-right: auto;
+    line-height: 1.6;
+  }
+
+  .method-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+    margin-top: 36px;
+  }
+  .method-step {
+    background: #fff;
+    border: 1px solid var(--ink-100);
+    border-radius: var(--r-md);
+    padding: 24px;
+    position: relative;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .method-step:hover { transform: translateY(-3px); box-shadow: var(--shadow-card); }
+  .method-step .num {
+    display: inline-block;
+    font-family: 'DM Serif Display', serif;
+    font-size: 20px;
+    width: 38px; height: 38px;
+    line-height: 38px;
+    text-align: center;
+    border-radius: 12px;
+    background: var(--grad-pop);
+    color: #fff;
+    margin-bottom: 14px;
+  }
+  .method-step h3 {
+    font-size: 15.5px;
+    font-weight: 700;
+    color: var(--ink-900);
+    margin-bottom: 8px;
+  }
+  .method-step p {
+    font-size: 13.5px;
+    color: var(--ink-500);
+    line-height: 1.6;
+  }
+
+  /* ---------- Gallery tabs + grids ---------- */
+  .tabs {
+    display: inline-flex;
+    background: var(--ink-50);
+    padding: 5px;
+    border-radius: 14px;
+    margin-bottom: 28px;
+    border: 1px solid var(--ink-100);
+    gap: 4px;
+  }
+  .tabs button {
+    border: none;
+    background: transparent;
+    color: var(--ink-500);
+    font-family: inherit;
+    font-size: 13.5px;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.18s;
+  }
+  .tabs button:hover { color: var(--ink-900); }
+  .tabs button.active {
+    background: #fff;
+    color: var(--teal-700);
+    box-shadow: var(--shadow-card);
+  }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; animation: fadeIn 0.3s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+  .panel {
+    background: #fff;
+    border: 1px solid var(--ink-100);
+    border-radius: var(--r-lg);
+    padding: 26px;
+    margin-bottom: 24px;
+    box-shadow: var(--shadow-card);
+  }
+  .panel-prompt {
+    font-size: 13.5px;
+    color: var(--ink-500);
+    margin-bottom: 18px;
+    line-height: 1.6;
+    padding: 12px 14px;
+    border-left: 3px solid var(--teal-500);
+    background: var(--teal-50);
+    border-radius: 0 8px 8px 0;
+    font-style: italic;
+  }
+  .panel-prompt span {
+    color: var(--teal-700);
+    font-weight: 700;
+    font-style: normal;
+    margin-right: 4px;
+  }
+
+  .video-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    align-items: start;   /* don't stretch shorter cells to match a taller row sibling */
+  }
+  .video-grid.showcase { gap: 18px; }
+  .video-grid.grid-2x2 { grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  .video-grid.grid-4col { grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+  .video-cell {
+    position: relative;
+    cursor: pointer;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #000;
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  .video-cell:hover { transform: translateY(-2px); box-shadow: var(--shadow-pop); }
+  .video-cell.is-ours { box-shadow: 0 0 0 2px var(--teal-500), var(--shadow-card); }
+  .video-cell.is-ours:hover { box-shadow: 0 0 0 2px var(--teal-500), var(--shadow-pop); }
+
+  .video-cell video {
+    width: 100%;
+    display: block;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    background: #000;
+  }
+
+  .play-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(180deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.35) 100%);
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+  }
+  .video-cell:hover .play-overlay,
+  .video-cell.paused .play-overlay,
+  .video-cell.sticky-paused .play-overlay { opacity: 1; }
+  .video-cell.sticky-paused { outline: 2px solid var(--coral-500); outline-offset: -2px; }
+  .play-overlay svg { width: 42px; height: 42px; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.5)); }
+
+  .video-label {
+    position: absolute;
+    top: 10px; left: 10px;
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 5px 10px;
+    border-radius: 6px;
+    background: rgba(15,31,46,0.78);
+    color: #fff;
+    letter-spacing: 0.02em;
+    backdrop-filter: blur(8px);
+    pointer-events: none;
+  }
+  .video-label.ours { background: var(--teal-500); }
+  .video-label.baseline { background: var(--coral-500); }
+  .video-category {
+    font-size: 10px;
+    font-weight: 500;
+    opacity: 0.88;
+    display: block;
+    margin-top: 2px;
+  }
+  .video-caption {
+    font-size: 12.5px;
+    color: var(--ink-500);
+    font-style: italic;
+    padding: 8px 4px 4px;
+    line-height: 1.5;
+    background: #fff;
+  }
+
+  /* ---------- Section dividers (color bands) ---------- */
+  .band {
+    height: 4px;
+    background: var(--grad-pop);
+    margin: 0;
+    border-radius: 999px;
+    max-width: 80px;
+  }
+
+  .ablation-mark { color: var(--teal-700); font-weight: 700; }
+
+  /* ---------- Footer ---------- */
+  .footer {
+    margin-top: 80px;
+    background: #0F1F2E;
+    color: rgba(255,255,255,0.65);
+    padding: 60px 24px 40px;
+    text-align: center;
+  }
+  .footer .brand {
+    font-family: 'DM Serif Display', serif;
+    font-size: 28px;
+    color: #fff;
+    margin-bottom: 8px;
+  }
+  .footer .cite {
+    max-width: 700px;
+    margin: 28px auto 0;
+    text-align: left;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 18px 22px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: rgba(255,255,255,0.75);
+    white-space: pre-wrap;
+  }
+  .footer .small {
+    font-size: 12px;
+    margin-top: 24px;
+    color: rgba(255,255,255,0.45);
+  }
+
+  /* ---------- Reveal-on-scroll (safe: visible by default, observer adds a subtle entrance) ---------- */
+  .reveal { opacity: 1; transition: opacity 0.5s ease, transform 0.5s ease; }
+  .reveal.js-hidden { opacity: 0; transform: translateY(14px); }
+  .reveal.in { opacity: 1; transform: none; }
+
+  /* ---------- Responsive ---------- */
+  @media (max-width: 980px) {
+    .method-grid { grid-template-columns: 1fr; }
+    .tldr-card { grid-template-columns: 1fr; text-align: center; }
+    .tldr-badge { margin: 0 auto; }
+    .video-grid { grid-template-columns: repeat(2, 1fr); }
+    .video-grid.grid-4col { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 580px) {
+    .nav-links { display: none; }
+    .video-grid, .video-grid.grid-2x2, .video-grid.grid-4col { grid-template-columns: 1fr; }
+    .section { padding: 70px 16px 30px; }
+    .tldr-card { padding: 24px; }
+    .panel { padding: 18px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============= NAV ============= -->
+<nav class="nav">
+  <div class="nav-inner">
+    <div class="nav-brand"><span class="dot"></span> AdaState</div>
+    <div class="nav-links">
+      <a href="#tldr">TL;DR</a>
+      <a href="#abstract">Abstract</a>
+      <a href="#motivation">Motivation</a>
+      <a href="#method">Method</a>
+      <a href="#gallery">Gallery</a>
+      <a href="#comparisons">Comparisons</a>
+      <a href="#ablations">Ablations</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ============= HERO ============= -->
+<header class="hero">
+  <div class="hero-inner">
+    <div class="hero-eyebrow"><span class="pulse"></span> Streaming Video Generation · 2026</div>
+    <h1>
+      <span class="grad">AdaState</span>:<br>
+      Self-Evolving Anchors for<br>
+      Streaming Video Generation
+    </h1>
+    <p class="tagline">
+      Replace the frozen first-frame anchor with an <b>adaptive state</b> that the model denoises alongside each chunk —
+      unlocking streaming video generation with richer dynamics without sacrificing coherence.
+    </p>
+    <!-- Authors card inside the hero -->
+    <div class="hero-authors-card">
+      <div class="author-chip">
+        <div class="author-avatar">YD</div>
+        <div>
+          <div class="author-name"><a href="https://yusufdalva.github.io/" target="_blank" rel="noopener">Yusuf Dalva</a></div>
+          <div class="author-links">
+            <a href="https://yusufdalva.github.io/" target="_blank" rel="noopener" aria-label="Website" title="Website">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/></svg>
+            </a>
+            <a href="mailto:ydalva@vt.edu" aria-label="Email" title="ydalva@vt.edu">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="author-chip">
+        <div class="author-avatar">PY</div>
+        <div>
+          <div class="author-name"><a href="https://pinguar.org/" target="_blank" rel="noopener">Pinar Yanardag</a></div>
+          <div class="author-links">
+            <a href="https://pinguar.org/" target="_blank" rel="noopener" aria-label="Website" title="Website">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20M12 2a15 15 0 0 0 0 20"/></svg>
+            </a>
+            <a href="mailto:pinary@vt.edu" aria-label="Email" title="pinary@vt.edu">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>
+            </a>
+          </div>
+        </div>
+      </div>
+      <div class="hero-affil">
+        <div class="vt-mark-hero">VT</div>
+        <div>
+          <div class="vt-name">Virginia Tech</div>
+          <div class="vt-dept">Dept. of Computer Science</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero-actions">
+      <a class="btn primary" href="#" aria-disabled="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg> Paper </a>
+      <a class="btn" href="#" aria-disabled="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg> Code (soon)</a>
+      <a class="btn" href="#bibtex"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h10"/></svg> BibTeX</a>
+    </div>
+
+    <!-- Hero teaser -->
+    <div class="hero-teaser">
+      <video autoplay muted loop playsinline src="assets/hero.mp4"></video>
+      <div class="hero-teaser-caption">AdaState rollout — long-horizon streaming generation with continuous camera motion and evolving scene state.</div>
+    </div>
+  </div>
+</header>
+
+<!-- ============= TL;DR ============= -->
+<section class="tldr" id="tldr">
+  <div class="tldr-card reveal">
+    <div class="tldr-badge">TL;DR</div>
+    <div class="tldr-body">
+      Streaming video models <span class="hl-coral">anchor on the first frame</span>, suppressing dynamics and freezing the scene.
+      <b>AdaState</b> instead <span class="hl-teal">denoises a hidden anchor</span> alongside each chunk — so the reference
+      <i>evolves with the content</i>. Result: longer rollouts, real camera motion, no extra modules.
+    </div>
+  </div>
+</section>
+
+<!-- ============= ABSTRACT ============= -->
+<section class="section narrow" id="abstract">
+  <span class="section-eyebrow ink">Abstract</span>
+
+  <div class="abstract-card reveal">
+    Autoregressive video diffusion models generate streaming video by producing frames sequentially, conditioning each chunk on previously 
+    generated content. These models are structurally anchored to the first frame: its key-value representation occupies a privileged position 
+    in the attention cache and serves as the primary scene reference throughout generation. As the cleanest and most error-free position in the 
+    cache, this anchor draws disproportionate attention, suppressing video dynamics, and locking scene composition to the initial viewpoint even 
+    as the scene naturally evolves. The result is a temporally shallow video in which motion, camera movement, and scene progression are dampened 
+    in favor of static consistency. To address this, we replace the static anchor with an \emph{adaptive state}, a hidden latent that the model 
+    denoises alongside content at every chunk but never renders. Rather than referencing a frozen first frame, the model generates its own scene 
+    anchor at each step by attending to both the previous state and the current content, producing a reference that evolves with the generated content. 
+    Unlike standard video generation, which encodes an absolute notion of time, our formulation treats time as relative: every generation step sees the 
+    same positional structure regardless of how far generation has progressed, and the state transition is identical at every chunk. Together, these properties 
+    introduce a recurrence into the generation process, where denoising serves as the transition function, and the KV cache serves as the carrier, requiring no 
+    external module. Experiments demonstrate that the adaptive state substantially improves video dynamics, enabling richer motion and natural scene 
+    progression within generated videos.
+  </div>
+</section>
+
+<!-- ============= MOTIVATION ============= -->
+<section class="section" id="motivation">
+  <span class="section-eyebrow coral">Motivation</span>
+  <h2 class="section-title">Attention focuses on the first frame and the recent content, accumulating over time.</h2>
+  <p class="section-subtitle">
+    Causal video diffusion models concentrate attention at the <i>first</i> and <i>most recent</i> cache positions.
+    The first position acts as a privileged static anchor that locks the scene's composition; the bias persists
+    across expanding window size <span class="ablation-mark">n</span>.
+  </p>
+
+  <div class="framework-figure reveal" style="background: linear-gradient(180deg, var(--coral-50) 0%, #fff 100%); border-color: #FFD9D3;">
+    <img src="assets/motivation.png" alt="Motivation figure: attention bias and qualitative comparison of reference strategies" loading="lazy">
+    <p class="caption">
+      <b>Figure.</b> (a) Share of context attention vs. cache position for various window sizes <i>n</i>: attention spikes at
+      the first (anchor) and most recent positions — a pattern preserved across <i>n</i>.
+      (b) Consequences across reference strategies: <span style="color:var(--coral-700);font-weight:600">No Reference (Self-Forcing)</span> enables change while staying dependent on the initial composition, <span style="color:var(--ink-700);font-weight:600">Static Reference (Rolling-Forcing)</span> freezes the scene,
+      while <span style="color:var(--teal-700);font-weight:600">Adaptive Reference (AdaState)</span> sustains motion and coherence.
+    </p>
+  </div>
+</section>
+
+<!-- ============= METHOD ============= -->
+<section class="section" id="method">
+  <span class="section-eyebrow teal">Method</span>
+  <h2 class="section-title">A self-evolving anchor, denoised in-place.</h2>
+  <p class="section-subtitle">
+    AdaState reserves a hidden state slot in the KV cache that the causal DiT denoises alongside content at every chunk.
+    The state gets updated within the cache as the rollout progresses.
+  </p>
+
+  <div class="framework-figure reveal">
+    <img src="assets/framework.png" alt="AdaState framework: per-chunk causal DiT with adaptive state recurrence" loading="lazy">
+    <p class="caption">
+      <b>Figure.</b> AdaState reserves an
+      <span style="color:var(--teal-700);font-weight:600">adaptive state slot</span> in the KV cache that the
+      causal DiT denoises alongside <span style="color:#3366CC;font-weight:600">video content tokens</span> at every chunk.
+      The state is never rendered: it propagates as a <i>recurrence</i>
+      (<span style="color:var(--teal-700)">green dashed</span>) while the
+      <i>sliding window</i> (<span style="color:#3366CC">blue dashed</span>) carries recent content forward. Decoded states surface
+      denoising errors but are never emitted as frames.
+    </p>
+  </div>
+
+  <div class="method-grid">
+    <div class="method-step reveal">
+      <div class="num">1</div>
+      <h3>Hidden adaptive state</h3>
+      <p>A latent slot is reserved inside the KV cache. The model denoises it alongside content at every chunk but never emits it as a generated frame.</p>
+    </div>
+    <div class="method-step reveal">
+      <div class="num">2</div>
+      <h3>Continuous-time anchor</h3>
+      <p>A static first-frame anchor freezes the reference at t<sub>0</sub> — a <b>growing discontinuity</b> with the present scene. AdaState's anchor instead changes continuously across chunks, staying in step with where the rollout actually is.</p>
+    </div>
+    <div class="method-step reveal">
+      <div class="num">3</div>
+      <h3>Robustness under error accumulation</h3>
+      <p>The decoded state surfaces and <b>amplifies the model's denoising errors</b> (as seen in zoomed patches), feeding them back as supervision on the effective position. AdaState learns to correct against them at training time.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============= GALLERY ============= -->
+<section class="section" id="gallery">
+  <span class="section-eyebrow teal">Generation Gallery</span>
+  <h2 class="section-title">Headline rollouts.</h2>
+  <p class="section-subtitle">Switch between within-horizon (5s, 21 latent frames) and beyond-horizon (12s, 51 latent frames).</p>
+
+  <div class="hover-hint">
+    <span class="pulse-dot"></span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+    Hover any video to pause · click to lock the pause
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="active" data-tab="g5">5-second</button>
+    <button data-tab="g12">12-second</button>
+  </div>
+
+  <!-- 5-Second -->
+  <div class="tab-panel active" id="g5">
+    <div class="panel">
+      <div class="video-grid showcase">
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="5-sec/0.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"An extreme close-up shot of an ant emerging from its nest… As the camera pulls back, we see a picturesque neighborhood beyond the hill."</p>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="5-sec/1.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"A dramatic exploration scene in a dark, mysterious cave, where an intrepid explorer lumbers forward, flashlight beam casting shadows on ancient murals…"</p>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="5-sec/2.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"A vibrant manga-style illustration of a sheep dressed as a ninja, stealthily navigating through a barnyard obstacle course…"</p>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="5-sec/3.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"A cinematic scene in the style of a fantasy drama, depicting a person walking through a serene field filled with floating lanterns…"</p>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="5-sec/4.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"An adorable kangaroo in a green dress and sun hat taking a leisurely stroll in Johannesburg during a breathtaking sunset…"</p>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="5-sec/5.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"A realistic photo of a llama wearing colorful pajamas dancing energetically on a stage under vibrant disco lighting…"</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 12-Second -->
+  <div class="tab-panel" id="g12">
+    <div class="panel">
+      <div class="video-grid showcase">
+        <div class="video-cell">
+          <video muted loop playsinline src="12-sec/0.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"A movie trailer in a classic cinematic style, featuring the adventurous journey of a 30-year-old space man wearing a vibrant red wool knitted motorcycle helmet…"</p>
+        </div>
+        <div class="video-cell">
+          <video muted loop playsinline src="12-sec/1.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"A dynamic and lively tour through an art gallery, showcasing a diverse array of beautiful works in various styles…"</p>
+        </div>
+        <div class="video-cell">
+          <video muted loop playsinline src="12-sec/2.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"A cinematic 35mm film-style extreme close-up of a gray-haired man in his 60s, deeply engrossed in thought at a Parisian café…"</p>
+        </div>
+        <div class="video-cell">
+          <video muted loop playsinline src="12-sec/3.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"An aerial view of Santorini during the blue hour, capturing white Cycladic buildings with blue domes against the twilight sky…"</p>
+        </div>
+        <div class="video-cell">
+          <video muted loop playsinline src="12-sec/4.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"A highly detailed close-up shot focusing on dew droplets glistening on the delicate petals of a blue rose…"</p>
+        </div>
+        <div class="video-cell">
+          <video muted loop playsinline src="12-sec/5.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <p class="video-caption">"A stylish woman in a black leather jacket and red dress strolls down a neon-lit Tokyo street, the wet pavement reflecting vibrant signs…"</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= COMPARISONS (gallery) ============= -->
+<section class="section" id="comparisons">
+  <span class="section-eyebrow coral">30-second comparisons</span>
+  <h2 class="section-title">At 6× training horizon, baselines either freeze or collapse.</h2>
+
+  <div class="hover-hint">
+    <span class="pulse-dot"></span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+    Hover any video to pause · click to lock the pause
+  </div>
+
+  <div class="tabs">
+    <button class="active" data-tab="cmp-mountain">1 · Mountain Range</button>
+    <button data-tab="cmp-coastal">2 · Coastal Cliffs</button>
+    <button data-tab="cmp-underwater">3 · Underwater City</button>
+  </div>
+
+  <!-- Mountain -->
+  <div class="tab-panel active" id="cmp-mountain">
+    <div class="panel">
+      <p class="panel-prompt"><span>Prompt</span>"A dynamic FPV aerial view of a vast mountain range at sunrise, snow-capped peaks rising above a sea of soft low clouds…"</p>
+      <div class="video-grid grid-2x2">
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="30s-comp1/self-forcing.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">Self-Forcing<span class="video-category">no anchor</span></div>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="30s-comp1/longlive.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">LongLive<span class="video-category">static anchor</span></div>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="30s-comp1/reward-forcing.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">Reward-Forcing<span class="video-category">EMA anchor</span></div>
+        </div>
+        <div class="video-cell is-ours">
+          <video autoplay muted loop playsinline src="30s-comp1/ours.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label ours">AdaState (Ours)<span class="video-category">adaptive anchor</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Coastal -->
+  <div class="tab-panel" id="cmp-coastal">
+    <div class="panel">
+      <p class="panel-prompt"><span>Prompt</span>"A sweeping aerial drone shot above dramatic coastal cliffs at golden hour, deep blue waves crashing against the rocks below and sending up white spray…"</p>
+      <div class="video-grid grid-2x2">
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="30s-comp2/causal-forcing.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">Causal-Forcing<span class="video-category">no anchor</span></div>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="30s-comp2/rolling-forcing.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">Rolling-Forcing<span class="video-category">static anchor</span></div>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="30s-comp2/memrope.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">MemRoPE<span class="video-category">EMA anchor</span></div>
+        </div>
+        <div class="video-cell is-ours">
+          <video autoplay muted loop playsinline src="assets/30s-coastal-ours.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label ours">AdaState (Ours)<span class="video-category">adaptive anchor</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Underwater -->
+  <div class="tab-panel" id="cmp-underwater">
+    <div class="panel">
+      <p class="panel-prompt"><span>Prompt</span>"A dynamic FPV aerial flight through a vibrant underwater coral city, where colorful corals line the streets and ancient stone ruins rise from the seabed…"</p>
+      <div class="video-grid grid-2x2">
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="30s-comp3/causvid.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">CausVid<span class="video-category">no anchor</span></div>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="30s-comp3/infinity-rope.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">Infinity-RoPE<span class="video-category">static anchor</span></div>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="30s-comp3/rolling-sink.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">Rolling-Sink<span class="video-category">heuristic anchor</span></div>
+        </div>
+        <div class="video-cell is-ours">
+          <video autoplay muted loop playsinline src="30s-comp3/ours.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label ours">AdaState (Ours)<span class="video-category">adaptive anchor</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= ABLATIONS ============= -->
+<section class="section" id="ablations">
+  <span class="section-eyebrow ink">Ablations</span>
+  <h2 class="section-title">Two knobs, one design.</h2>
+  <p class="section-subtitle">State size &amp; cache window, and the horizon weight <span class="ablation-mark">α</span> that re-balances within- vs. beyond-horizon supervision.</p>
+
+  <div class="hover-hint">
+    <span class="pulse-dot"></span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+    Hover any video to pause · click to lock the pause
+  </div>
+
+  <div class="tabs">
+    <button class="active" data-tab="abl-w">Window &amp; State</button>
+    <button data-tab="abl-a">Horizon weight α</button>
+  </div>
+
+  <div class="tab-panel active" id="abl-w">
+    <div class="panel">
+      <p class="panel-prompt"><span>Prompt</span>"An astronaut running through a narrow alley in Rio de Janeiro… helmet reflects sunlight…"</p>
+      <div class="video-grid">
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="window-ablation/state-3.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">F<sub>s</sub>=3, W<sub>p</sub>+F=9<span class="video-category">more state, wider window</span></div>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="window-ablation/window-9.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">F<sub>s</sub>=1, W<sub>p</sub>+F=9<span class="video-category">less state, wider window</span></div>
+        </div>
+        <div class="video-cell is-ours">
+          <video autoplay muted loop playsinline src="window-ablation/window-6.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label ours">F<sub>s</sub>=1, W<sub>p</sub>+F=6<span class="video-category">AdaState (final)</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <p class="panel-prompt"><span>Prompt</span>"An old man in blue jeans and a white T-shirt takes a stroll in Mumbai during a winter storm…"</p>
+      <div class="video-grid">
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="window-ablation/state-3-2.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">F<sub>s</sub>=3, W<sub>p</sub>+F=9<span class="video-category">more state, wider window</span></div>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="window-ablation/window-9-2.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">F<sub>s</sub>=1, W<sub>p</sub>+F=9<span class="video-category">less state, wider window</span></div>
+        </div>
+        <div class="video-cell is-ours">
+          <video autoplay muted loop playsinline src="window-ablation/window-6-2.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label ours">F<sub>s</sub>=1, W<sub>p</sub>+F=6<span class="video-category">AdaState (final)</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="abl-a">
+    <div class="panel">
+      <p class="panel-prompt"><span>Prompt (5s)</span>"A handheld shot following a young child running through a field of tall grass…"</p>
+      <div class="video-grid">
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="alpha-ablation/alpha-normal-5s.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">No weighting<span class="video-category">α = 0</span></div>
+        </div>
+        <div class="video-cell is-ours">
+          <video autoplay muted loop playsinline src="alpha-ablation/alpha2-5s.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label ours">α = 2<span class="video-category">best at 5s</span></div>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="alpha-ablation/alpha4-5s.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">α = 4<span class="video-category">long-horizon model</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <p class="panel-prompt"><span>Prompt (30s)</span>"A dynamic FPV aerial flight above Niagara Falls, the camera racing toward the thundering edge…"</p>
+      <div class="video-grid">
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="alpha-ablation/alpha-normal-30s.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">No weighting<span class="video-category">α = 0</span></div>
+        </div>
+        <div class="video-cell">
+          <video autoplay muted loop playsinline src="alpha-ablation/alpha2-30s.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label baseline">α = 2<span class="video-category">within-horizon model</span></div>
+        </div>
+        <div class="video-cell is-ours">
+          <video autoplay muted loop playsinline src="alpha-ablation/alpha4-30s.mp4"></video>
+          <div class="play-overlay"><svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg></div>
+          <div class="video-label ours">α = 4<span class="video-category">best at 30s</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============= FOOTER ============= -->
+<footer class="footer" id="bibtex">
+  <div class="brand">AdaState</div>
+  <p>Self-Evolving Anchors for Streaming Video Generation</p>
+  <div class="cite">@misc{dalva2026adastate,
+      title={AdaState: Self-Evolving Anchors for Streaming Video Generation},
+      author={Yusuf Dalva and Pinar Yanardag},
+      year={2026},
+      eprint={XXXX.XXXXX},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/XXXX.XXXXX}
+}</div>
+  <p class="small">© Yusuf Dalva &amp; Pinar Yanardag · Virginia Tech</p>
+</footer>
+
+<script>
+  /* ---------- Hover-to-pause for all videos ----------
+     Convention: videos autoplay; hovering a cell pauses (so you can inspect
+     a frame); moving the cursor away resumes. A click toggles a "sticky" pause
+     for users who can't / don't want to hover. */
+  const playSVG  = '<svg viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>';
+  const pauseSVG = '<svg viewBox="0 0 24 24" fill="white"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>';
+
+  document.querySelectorAll('.video-cell').forEach(cell => {
+    const video = cell.querySelector('video');
+    if (!video) return;
+    const overlay = cell.querySelector('.play-overlay');
+
+    // Hover → pause
+    cell.addEventListener('mouseenter', () => {
+      if (cell.classList.contains('sticky-paused')) return;
+      video.pause();
+      if (overlay) overlay.innerHTML = pauseSVG;
+    });
+    cell.addEventListener('mouseleave', () => {
+      if (cell.classList.contains('sticky-paused')) return;
+      video.play().catch(()=>{});
+      if (overlay) overlay.innerHTML = playSVG;
+    });
+
+    // Click → sticky pause/play (overrides hover)
+    cell.addEventListener('click', (e) => {
+      if (e.target.closest('.video-caption')) return;
+      if (cell.classList.contains('sticky-paused')) {
+        cell.classList.remove('sticky-paused');
+        video.play().catch(()=>{});
+        if (overlay) overlay.innerHTML = playSVG;
+      } else {
+        cell.classList.add('sticky-paused');
+        video.pause();
+        if (overlay) overlay.innerHTML = pauseSVG;
+      }
+    });
+  });
+
+  /* ---------- Tabs ---------- */
+  document.querySelectorAll('.tabs').forEach(group => {
+    const buttons = group.querySelectorAll('button');
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.tab;
+        const section = group.closest('.section');
+        section.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+        section.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        const target = section.querySelector('#' + id);
+        if (target) target.classList.add('active');
+
+        // Play videos in the now-active panel; pause others to save resources
+        section.querySelectorAll('.tab-panel video').forEach(v => v.pause());
+        if (target) target.querySelectorAll('video').forEach(v => { v.currentTime = 0; v.play().catch(()=>{}); });
+      });
+    });
+  });
+
+  /* ---------- Reveal-on-scroll (progressively enhanced; content visible if JS fails) ---------- */
+  if ('IntersectionObserver' in window) {
+    // Hide reveal elements only if they are clearly below the fold; let visible-on-load ones stay visible.
+    document.querySelectorAll('.reveal').forEach(el => {
+      const r = el.getBoundingClientRect();
+      if (r.top > window.innerHeight) el.classList.add('js-hidden');
+    });
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.remove('js-hidden');
+          entry.target.classList.add('in');
+          io.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+    document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+  }
+
+  /* ---------- Pause off-screen videos to save CPU/network (respects sticky-paused) ---------- */
+  const playObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      const v = entry.target;
+      const cell = v.closest('.video-cell');
+      if (cell && cell.classList.contains('sticky-paused')) return;
+      if (entry.isIntersecting) v.play().catch(()=>{});
+      else v.pause();
+    });
+  }, { threshold: 0.15 });
+  document.querySelectorAll('video').forEach(v => playObserver.observe(v));
+</script>
+
+</body>
+</html>
