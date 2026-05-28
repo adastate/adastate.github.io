@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- AdaState gem favicon: faceted teal gem in the brand palette -->
+  <polygon points="16,22 32,6 24,22"            fill="#5DD2B0"/>
+  <polygon points="48,22 32,6 40,22"            fill="#3CBE96"/>
+  <polygon points="24,22 32,6 40,22"            fill="#7FE0BE"/>
+  <polygon points="16,22 24,22 32,60"           fill="#047358"/>
+  <polygon points="48,22 40,22 32,60"           fill="#033B2D"/>
+  <polygon points="24,22 40,22 32,60"           fill="#06A77D"/>
+  <!-- Outline -->
+  <path d="M16 22 L32 6 L48 22 L32 60 Z M24 22 L40 22 M16 22 L40 22 M48 22 L24 22"
+        stroke="#0F1F2E" stroke-width="0.8" fill="none" opacity="0.18" stroke-linejoin="round"/>
+</svg>
